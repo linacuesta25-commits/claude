@@ -62,6 +62,7 @@ FORMATO_FECHA_EXCEL = "dd/mm/yyyy hh:mm:ss"
 
 # Nombres de las columnas y valores que agrega el script
 COL_FILA_EXCEL = "FILA EXCEL ORIGINAL"
+COL_ARCHIVO = "ARCHIVO ORIGEN"   # solo lo usa validar_por_trimestre.py
 COL_DIA = "DIA DE LA SEMANA"
 COL_HORA_CREACION = "HORA CREACION"
 COL_HORA_MODIFICACION = "HORA ULTIMA MODIFICACION"
@@ -256,6 +257,7 @@ def normalizar_fechas(df: pd.DataFrame, columnas: list):
             valor = originales.loc[idx]
             vacio = valor is None or (isinstance(valor, float) and pd.isna(valor)) or not str(valor).strip()
             problemas.append({
+                **({COL_ARCHIVO: df.at[idx, COL_ARCHIVO]} if COL_ARCHIVO in df.columns else {}),
                 "FILA EXCEL ORIGINAL": df.at[idx, COL_FILA_EXCEL],
                 "COLUMNA": col,
                 "VALOR ENCONTRADO": "(vacío)" if vacio else str(valor),
