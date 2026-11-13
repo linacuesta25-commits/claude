@@ -346,7 +346,8 @@ def aplicar_reversiones(tx: pd.DataFrame, rev: pd.DataFrame, excepciones: list, 
     for col in ("fecha_alt", "estado", "tipificacion", "fecha_solicitud", "valor_rev"):
         if col not in rev:
             rev[col] = pd.NA
-    rev = rev[rev[["cedula", "fecha", "valor"]].notna().any(axis=1)]          # filas vacías del formato
+    # Filas vacías de la plantilla (sin cédula ni valor; la fecha trae fórmulas como "//")
+    rev = rev[rev[["cedula", "valor"]].notna().any(axis=1)]
     conteos["rev_leidas"] = len(rev)
     rev = quitar_duplicados(rev, "reversiones", excepciones)
     rev["cedula"] = limpiar_llave(rev["cedula"])

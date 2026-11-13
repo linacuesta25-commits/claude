@@ -80,3 +80,70 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ============================================================================
+# Prueba del consolidado de reversiones (datos INVENTADOS)
+# ============================================================================
+def prueba_reversiones():
+    carpeta = Path(tempfile.mkdtemp())
+    act = pd.DataFrame([  # TICKET, cédula, firma, cupo
+        ("R1", "100", "2026-05-01 10:00:00", 1000000),   # reversión total -> se cae
+        ("R2", "200", "2026-05-01 10:00:00", 1000000),   # reversión parcial 200.000 -> 80 %, se cae
+        ("R3", "300", "2026-05-01 10:00:00", 1000000),   # reversión PENDIENTE -> no se descuenta, sigue
+        ("R4", "400", "2026-05-01 10:00:00", 2000000),   # cobro doble: 2 x 1.000.000, una reversada -> 50 %
+        ("R5", "500", "2026-05-01 10:00:00", 1000000),   # fecha texto 01/05/2026 (día/mes) + riesgo
+        ("R6", "600", "2026-05-01 10:00:00", 1000000),   # fecha mala, cruza por 'Fecha organizada'
+    ], columns=["TICKET", "DOCUMENTO DE IDENTIDAD", "FECHA FIRMA PAGARÉ", "VALOR CUPO APROBADO"])
+    act["EMPRESA"], act["IDENTIFICADOR"] = "SSI", "ACTIVADA"
+    act.to_excel(carpeta / "act.xlsx", index=False)
+    pd.DataFrame([
+        ("100", "2026-05-01 11:00:00", 1000000, "U1"), ("200", "2026-05-01 11:00:00", 1000000, "U2"),
+        ("300", "2026-05-01 11:00:00", 1000000, "U3"), ("400", "2026-05-01 11:00:00", 1000000, "U4"),
+        ("400", "2026-05-01 11:00:05", 1000000, "U5"), ("500", "2026-05-01 11:00:00", 1000000, "U6"),
+        ("600", "2026-05-01 11:00:00", 1000000, "U7"),
+    ], columns=["Identificación", "Fecha Utilización", "Monto", "Número de crédito"]).to_excel(carpeta / "tx.xlsx", index=False)
+    cols = ["Cédula Cliente", "Fecha Transacción", "Fecha organizada", "Valor Total TX", "Valor Reversión",
+            "Estado Reversión (Aplicada/Pendiente)", "Tipificación", "Fecha Ingreso Solicitud"]
+    rev = pd.DataFrame([
+        (100, pd.Timestamp("2026-05-01"), 20260501, 1000000, 1000000, "Aplicada", "DESISTE DE LA COMPRA", pd.Timestamp("2026-05-05")),
+        (100, pd.Timestamp("2026-05-01"), 20260501, 1000000, 1000000, "Aplicada", "DESISTE DE LA COMPRA", pd.Timestamp("2026-05-05")),  # duplicada
+        (200, pd.Timestamp("2026-05-01"), 20260501, 1000000, 200000, "Aplicada", "ERROR EN VALOR", pd.Timestamp("2026-05-05")),
+        (300, pd.Timestamp("2026-05-01"), 20260501, 1000000, 1000000, "PENDIENTE", "DESISTE DE LA COMPRA", pd.Timestamp("2026-05-05")),
+        (400, pd.Timestamp("2026-05-01"), 20260501, 1000000, 1000000, "Aplicada", "COBRO DOBLE", pd.Timestamp("2026-05-05")),
+        (500, "01/05/2026", 20260501, 1000000, 1000000, "Aplicada", "NO PASA VALIDACIÓN DE IDENTIDAD", pd.Timestamp("2026-05-05")),
+        (600, "//", 20260501, 1000000, 1000000, "Aplicada", "DESISTE DE LA COMPRA", pd.Timestamp("2026-05-05")),
+        (None, "//", None, None, None, None, None, None),                                   # fila vacía de plantilla
+        (700, pd.Timestamp("2024-01-01"), 20240101, 500000, 500000, "Aplicada", "DESISTE", pd.Timestamp("2024-01-05")),  # fuera de periodo
+    ], columns=cols)
+    with pd.ExcelWriter(carpeta / "rev.xlsx") as w:
+        rev.to_excel(w, sheet_name="AGIL", index=False)
+
+    m.ARCHIVOS_ACTIVACIONES, m.ARCHIVO_TRANSACCIONES = [carpeta / "act.xlsx"], carpeta / "tx.xlsx"
+    m.ARCHIVO_REVERSIONES, m.HOJAS_REVERSIONES = carpeta / "rev.xlsx", ["AGIL"]
+    m.TX_ESTADO, m.RUTA_SALIDA = None, carpeta / "salida_rev.xlsx"
+    r = m.main()
+    ev = r["evaluacion"]
+    esperado = {"R1": (0.0, False), "R2": (0.8, False), "R3": (1.0, True), "R4": (0.5, False),
+                "R5": (0.0, False), "R6": (0.0, False)}
+    errores = 0
+    for t, (pct, marcado) in esperado.items():
+        ok = abs(ev.loc[t, "pct"] - pct) < 1e-9 and bool(ev.loc[t, "marcado"]) == marcado
+        errores += not ok
+        print(f"  {t}: uso {ev.loc[t, 'pct']:.0%} marcado={bool(ev.loc[t, 'marcado'])}  {'OK' if ok else 'ERROR'}")
+    rv = r["reversiones"].set_index("ID ACTIVACIÓN")
+    chequeos = {
+        "cobro doble: se reversa la compra más reciente (U5)": rv.loc["R4", "ID TRANSACCIÓN"] == "U5",
+        "R5 marcada con tipificación de riesgo": rv.loc["R5", "TIPIFICACIÓN DE RIESGO"] == "Sí",
+        "R1 'La alerta se cae por la reversión'": rv.loc["R1", "RESULTADO"] == "La alerta se cae por la reversión",
+        "1 duplicado y 1 pendiente reportados": set(r["excepciones"]["TIPO"]) >= {
+            "Duplicado exacto eliminado (reversiones)", "Reversión no aplicada (no se descuenta)"},
+    }
+    for nombre, ok in chequeos.items():
+        errores += not ok
+        print(f"  {nombre}: {'OK' if ok else 'ERROR'}")
+    print("\nRESULTADO REVERSIONES:", "TODAS LAS PRUEBAS PASARON" if errores == 0 else f"{errores} PRUEBAS FALLARON")
+
+
+if __name__ == "__main__":
+    prueba_reversiones()
