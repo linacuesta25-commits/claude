@@ -443,6 +443,7 @@ def cruzar(act: pd.DataFrame, tx: pd.DataFrame, excepciones: list, conteos: dict
     excepciones.append(marcar(tx, ~tx["llave"].isin(ced_act), "Transacción sin activación (no cruza)"))
     conteos["act_sin_tx"] = int((~act["llave"].isin(ced_tx)).sum())
     conteos["tx_sin_act"] = int((~tx["llave"].isin(ced_act)).sum())
+    conteos["personas_con_tx"] = len(ced_act & ced_tx)   # personas con activación que hicieron transacciones
 
     a = act[["id_activacion", "llave", "cedula", "fecha", "cupo", "ARCHIVO", "FILA EXCEL"]].rename(
         columns={"fecha": "fecha_activacion", "ARCHIVO": "archivo_act", "FILA EXCEL": "fila_act"})
@@ -547,12 +548,43 @@ def calcular(act: pd.DataFrame, ventana: pd.DataFrame) -> tuple:
     return evaluacion, alertas, detalle, reversiones
 
 
+def indicador_personas(conteos: dict, evaluacion: pd.DataFrame, alertas: pd.DataFrame) -> dict:
+    """
+    EJE DEL ANÁLISIS, contado por PERSONA (cédula), no por activación:
+    de las personas que realizaron transacciones, cuántas usaron el UMBRAL del cupo
+    en las primeras HORAS_VENTANA horas desde la activación. Si una persona tiene
+    varias activaciones, cuenta una vez y queda marcada si alguna de ellas se marcó.
+    """
+    llave_ev = llave_cruce(evaluacion["cedula"])
+    con_tx = conteos["personas_con_tx"]
+    en_ventana = llave_ev[evaluacion["n_tx"] > 0].nunique()
+    marcadas = llave_ev[evaluacion["marcado"]].nunique()
+    # Tiempo hasta llegar al umbral: el más rápido de cada persona
+    horas = alertas.assign(llave=llave_cruce(alertas["CÉDULA"])).groupby("llave")[
+        "HORAS DESDE ACTIVACIÓN HASTA EL CRUCE"].min()
+    tramos = pd.cut(horas, [-np.inf, 1, 6, np.inf], right=False,
+                    labels=["Menos de 1 hora", "De 1 a menos de 6 horas", f"De 6 a {HORAS_VENTANA} horas"])
+    return {"con_tx": con_tx, "en_ventana": en_ventana, "marcadas": marcadas,
+            "pct": marcadas / con_tx if con_tx else 0, "tramos": tramos.value_counts().reindex(tramos.cat.categories, fill_value=0)}
+
+
 def armar_resumen(conteos: dict, evaluacion: pd.DataFrame, alertas: pd.DataFrame,
                   reversiones: pd.DataFrame, excepciones: pd.DataFrame) -> pd.DataFrame:
     evaluadas = len(evaluacion)
     con_uso = int((evaluacion["n_tx"] > 0).sum())
     marcadas = len(alertas)
+    ind = indicador_personas(conteos, evaluacion, alertas)
+    eje = f"Uso del {UMBRAL:.0%} o más del cupo en {HORAS_VENTANA} h (por persona)"
     filas = [
+        (eje, "Personas que realizaron transacciones (con activación)", ind["con_tx"]),
+        (eje, f"   de ellas, con transacciones dentro de las {HORAS_VENTANA} h", ind["en_ventana"]),
+        (eje, f"PERSONAS QUE USARON EL {UMBRAL:.0%} O MÁS DEL CUPO EN {HORAS_VENTANA} H", ind["marcadas"]),
+        (eje, "% sobre las personas que realizaron transacciones", ind["pct"]),
+        (eje, f"Personas con transacciones que NO llegaron al {UMBRAL:.0%} en {HORAS_VENTANA} h",
+         ind["con_tx"] - ind["marcadas"]),
+    ]
+    filas += [(f"Tiempo hasta usar el {UMBRAL:.0%} (por persona)", tramo, int(n)) for tramo, n in ind["tramos"].items()]
+    filas += [
         ("Parámetros", "Umbral", f"{UMBRAL:.0%}"),
         ("Parámetros", "Ventana", f"{HORAS_VENTANA} horas corridas desde la activación (límite incluido)"),
         ("Parámetros", "Fecha de activación usada", ACT_FECHA),
@@ -674,10 +706,15 @@ def main():
         return None
 
     evaluadas, marcadas = len(evaluacion), len(alertas)
+    ind = indicador_personas(conteos, evaluacion, alertas)
     print("\n============== RESUMEN ==============")
-    print(f"Activaciones evaluadas:        {evaluadas}")
-    print(f"Con uso en {HORAS_VENTANA} h:                {int((evaluacion['n_tx'] > 0).sum())}")
-    print(f"Marcadas (>= {UMBRAL:.0%}):           {marcadas} ({marcadas / evaluadas:.2%} de las evaluadas)" if evaluadas else "")
+    print(f"Personas que realizaron transacciones:       {ind['con_tx']}")
+    print(f"Personas que usaron el {UMBRAL:.0%}+ del cupo en {HORAS_VENTANA} h: "
+          f"{ind['marcadas']} ({ind['pct']:.2%})")
+    for tramo, n in ind["tramos"].items():
+        print(f"   {tramo:25}: {int(n)}")
+    print(f"(Activaciones evaluadas: {evaluadas}; alertas por activación: {marcadas})")
+    print("Alertas por rango de uso:")
     for rango in ["90 a 94", "95 a 99", "100 o más"]:
         print(f"   {rango:10}: {int((alertas['RANGO DE USO'] == rango).sum())}")
     if ARCHIVO_REVERSIONES:
