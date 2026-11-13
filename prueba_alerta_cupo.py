@@ -50,6 +50,7 @@ def correr(carpeta: Path, modo: str):
     m.TX_ESTADO = "Estado"
     m.TRATAMIENTO_REVERSAS = modo
     m.RUTA_SALIDA = carpeta / f"salida_{modo}.xlsx"
+    m.ARCHIVO_REVERSIONES = None
     return m.main()
 
 
